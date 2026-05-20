@@ -1,0 +1,8 @@
+# Minimum dependencies for the policy server template (CPU-only torch).
+# [CONTESTANT] Replace the torch line with your model's actual requirements.
+# For GPU: remove --extra-index-url and use a CUDA base image in Dockerfile.
+grpcio>=1.73.1
+grpcio-tools>=1.73.1
+protobuf>=5.0
+torch>=2.0 --extra-index-url https://download.pytorch.org/whl/cpu
+numpy>=1.24
