@@ -1,0 +1,36 @@
+# ── Organizer-only: hardware, environment, data ──────────────────────────────
+robot.env
+Datasets/
+logs/
+.python-version
+pyproject.toml
+uv.toml
+
+# ── Organizer-only: scripts that require the full lerobot install ─────────────
+scripts/eval_client.py
+scripts/mock_policy_server.py
+scripts/start_eval_client.sh
+scripts/start_policy_server.sh
+scripts/start_robot_client.sh
+scripts/teleop_real.py
+scripts/test_grpc.py
+
+
+# ── Internal tooling ─────────────────────────────────────────────────────────
+CLAUDE.md
+.agents/
+.claude/
+
+# ── Python / build artifacts ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ── LeRobot vendor (not needed by contestants) ────────────────────────────────
+third_party/*
+!third_party/.gitkeep
