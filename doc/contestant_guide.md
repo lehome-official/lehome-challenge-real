@@ -13,7 +13,8 @@ This guide explains how to package your policy model as a Docker image, test it 
 5. [Modifying Dockerfile](#5-modifying-dockerfile)
 6. [Local Testing](#6-local-testing)
 7. [Submission Checklist](#7-submission-checklist)
-8. [FAQ](#8-faq)
+8. [Hardware Testing](#8-hardware-testing-optional--if-you-have-access-to-the-robot)
+9. [FAQ](#9-faq)
 
 ---
 
@@ -296,7 +297,118 @@ Tell the organizer:
 
 ---
 
-## 8. FAQ
+## 8. Hardware Testing (Optional — if you have access to the robot)
+
+If you have access to an SO-100 bimanual robot setup, you can run your policy Docker against real hardware before submitting. This gives far more confidence than fake-observation testing.
+
+### 8.1 Prerequisites
+
+Complete the full environment setup first:
+
+```bash
+# 1. Install the project Python environment
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e "./third_party/lerobot[all]"
+
+# 2. Configure hardware ports and cameras
+cp robot.env.template robot.env
+nano robot.env        # fill in your serial port paths and camera indices
+# See doc/02_robot_env.md for how to find the right device paths
+```
+
+### 8.2 Verify hardware wiring with the mock server
+
+Before connecting your real policy, use the **mock server** to confirm the robot responds to commands. This runs entirely within the project venv — no Docker required.
+
+```bash
+# Terminal A — hold-position mock (arms don't move, safe):
+source .venv/bin/activate
+python scripts/mock_policy_server.py --port=8080
+
+# Terminal B — run the hardware eval client:
+source .venv/bin/activate
+source ./robot.env
+export TEAM=test TASK="Fold the Garment" N_EPISODES=1 EPISODE_DURATION=10
+bash scripts/start_eval_client.sh
+```
+
+If the arms hold their current position and the client prints step logs, the hardware pipeline is working. Then try the sine-wave demo:
+
+```bash
+# Terminal A — sine-wave demo (arms will oscillate slowly):
+python scripts/mock_policy_server.py --port=8080 --demo --amplitude=5 --period=6
+```
+
+**Keep `--amplitude` small (≤ 10°) and make sure the arms have clearance.**
+
+### 8.3 Test your Docker policy on real hardware
+
+Once the mock test passes, replace the mock server with your policy Docker:
+
+```bash
+# Terminal A — your policy Docker:
+docker run --rm -p 8080:8080 lehome-policy-myteam
+# Wait for: "Policy server listening on 0.0.0.0:8080"
+
+# Terminal B — hardware eval client (same as before):
+source .venv/bin/activate
+source ./robot.env
+export TEAM=myteam N_EPISODES=2 EPISODE_DURATION=30
+bash scripts/start_eval_client.sh
+```
+
+**Keyboard controls during evaluation:**
+
+| Key | Effect |
+|-----|--------|
+| `→` or `d` | Finish current episode early, proceed to next |
+| `←` or `a` | Abort current episode and **redo** it (scene wasn't ready, robot fell, etc.) |
+| `ESC` | Stop the entire session |
+
+Between episodes the script waits for **ENTER** before starting the next one, giving the operator time to reset the scene.
+
+What happens each episode:
+1. Print episode banner with key hints.
+2. Prompt **ENTER** — operator resets scene, then presses ENTER.
+3. Control loop runs until `EPISODE_DURATION` seconds elapse **or** operator presses `→` / `←`:
+   - Captures joint state + camera images from the real robot.
+   - Sends them to your Docker via gRPC.
+   - Receives predicted action chunk, executes on arms at 20 Hz.
+   - Keyboard events are checked between every action (≤ 50 ms response time).
+4. Front-camera frames are saved to `Datasets/eval/<team>/<task>/`.
+
+### 8.4 Environment variable reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEAM` | `test_run` | Used in output filenames |
+| `TASK` | `Fold the Garment` | Task string sent to the policy |
+| `N_EPISODES` | `2` | Number of evaluation episodes |
+| `EPISODE_DURATION` | `60` | Seconds per episode |
+| `SERVER_ADDR` | `localhost:8080` | Policy Docker address |
+| `FPS` | `20` | Control frequency (Hz) |
+| `ACTIONS_PER_CHUNK` | `20` | Actions returned per gRPC call |
+
+### 8.5 Troubleshooting hardware tests
+
+**`LEFT_FOLLOWER_PORT` not set**
+→ Run `source ./robot.env` before calling `start_eval_client.sh`.
+
+**`make_robot` or `make_robot` import error**
+→ Activate the venv first: `source .venv/bin/activate`.
+
+**Arms hold position but don't move**
+→ This is the default behavior of `server.py` — the template echoes joint state. Replace `_predict()` with your model.
+
+**`GetActions` timeout — arms pause**
+→ Your model inference takes > 5 s. Add a warm-up call in `__init__` (see §4.1).
+
+**Camera image shape mismatch**
+→ Confirm `robot.env` camera resolutions match what the policy expects (`left_wrist`: 480×640, `right_wrist`: 480×640, `right_front`: 720×1280).
+
+---
+
+## 9. FAQ
 
 ### Server startup
 
