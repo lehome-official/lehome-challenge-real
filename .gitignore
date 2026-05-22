@@ -6,10 +6,7 @@ logs/
 pyproject.toml
 uv.toml
 
-# ── Organizer-only: scripts that require the full lerobot install ─────────────
-scripts/eval_client.py
-scripts/mock_policy_server.py
-scripts/start_eval_client.sh
+# ── Organizer-only: scripts not intended for contestants ─────────────────────
 scripts/start_policy_server.sh
 scripts/start_robot_client.sh
 scripts/teleop_real.py
