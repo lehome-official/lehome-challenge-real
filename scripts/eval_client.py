@@ -33,7 +33,7 @@ Prerequisites
 Control loop (per episode)
 --------------------------
     for each super-step:
-        1. capture_observation()        # read joints + cameras from robot
+        1. get_observation()            # read joints + cameras from robot
         2. SendObservations (gRPC)      # send to policy Docker
         3. GetActions       (gRPC)      # receive action chunk
         4. send_action() x chunk_size   # execute at 20 Hz
@@ -62,38 +62,21 @@ import numpy as np
 import torch
 
 # ---------------------------------------------------------------------------
-# LeRobot imports — try both the older and newer package layout
+# LeRobot v0.5.1 imports
 # ---------------------------------------------------------------------------
-_make_robot = None
-_OmegaConf  = None
-
 try:
-    from omegaconf import OmegaConf as _OmegaConf_mod
-    _OmegaConf = _OmegaConf_mod
+    from lerobot.cameras import Cv2Backends
+    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+    from lerobot.robots import make_robot_from_config
+    from lerobot.robots.bi_so_follower import BiSOFollowerConfig
+    from lerobot.robots.so_follower import SOFollowerConfig
 except ImportError:
-    pass
-
-for _make_robot_path in (
-    "lerobot.common.robot_devices.robots.factory",
-    "lerobot.robots.factory",
-):
-    try:
-        import importlib as _il
-        _make_robot = _il.import_module(_make_robot_path).make_robot
-        break
-    except (ImportError, AttributeError):
-        continue
-
-if _make_robot is None or _OmegaConf is None:
     print(
-        "[eval_client] ERROR: LeRobot or omegaconf not found.\n"
+        "[eval_client] ERROR: LeRobot v0.5.1 not found.\n"
         "  Run:  source .venv/bin/activate\n"
         "  Then: uv pip install -e './third_party/lerobot[all]'\n"
     )
     sys.exit(1)
-
-make_robot = _make_robot
-OmegaConf  = _OmegaConf
 
 # ---------------------------------------------------------------------------
 # pynput — keyboard listener (part of lerobot[all] deps)
@@ -127,6 +110,7 @@ MOTOR_NAMES = [
     "right_wrist_flex.pos",   "right_wrist_roll.pos",   "right_gripper.pos",
 ]
 ACTION_DIM = len(MOTOR_NAMES)  # 12
+CAMERA_NAMES = ["left_wrist", "right_wrist", "right_front"]
 
 LEROBOT_FEATURES = {
     "observation.state": {
@@ -197,45 +181,53 @@ def _coerce_cam(val: str) -> int | str:
 
 def _build_robot(args):
     """Instantiate a bi_so_follower robot from the CLI / env-var config."""
-    cfg = OmegaConf.create({
-        "type": "bi_so_follower",
-        "id":   "bimanual_follower",
-        "left_arm_config": {
-            "port": args.left_follower_port,
-            "cameras": {
-                "wrist": {
-                    "type":          "opencv",
-                    "index_or_path": _coerce_cam(args.left_wrist_cam),
-                    "width":         args.left_wrist_width,
-                    "height":        args.left_wrist_height,
-                    "fps":           args.fps,
-                },
-            },
+    left_arm_config = SOFollowerConfig(
+        port=args.left_follower_port,
+        cameras={
+            "wrist": OpenCVCameraConfig(
+                index_or_path=_coerce_cam(args.left_wrist_cam),
+                width=args.left_wrist_width,
+                height=args.left_wrist_height,
+                fps=args.fps,
+            ),
         },
-        "right_arm_config": {
-            "port": args.right_follower_port,
-            "cameras": {
-                "wrist": {
-                    "type":          "opencv",
-                    "index_or_path": _coerce_cam(args.right_wrist_cam),
-                    "width":         args.right_wrist_width,
-                    "height":        args.right_wrist_height,
-                    "fps":           args.fps,
-                },
-                "front": {
-                    "type":          "opencv",
-                    "index_or_path": _coerce_cam(args.front_cam),
-                    "width":         args.front_width,
-                    "height":        args.front_height,
-                    "fps":           args.fps,
-                    "backend":       "V4L2",
-                    "fourcc":        "MJPG",
-                    "warmup_s":      5,
-                },
-            },
+    )
+    right_arm_config = SOFollowerConfig(
+        port=args.right_follower_port,
+        cameras={
+            "wrist": OpenCVCameraConfig(
+                index_or_path=_coerce_cam(args.right_wrist_cam),
+                width=args.right_wrist_width,
+                height=args.right_wrist_height,
+                fps=args.fps,
+            ),
+            "front": OpenCVCameraConfig(
+                index_or_path=_coerce_cam(args.front_cam),
+                width=args.front_width,
+                height=args.front_height,
+                fps=args.fps,
+                backend=Cv2Backends.V4L2,
+                fourcc="MJPG",
+                warmup_s=5,
+            ),
         },
-    })
-    return make_robot(cfg)
+    )
+    cfg = BiSOFollowerConfig(
+        id="bimanual_follower",
+        left_arm_config=left_arm_config,
+        right_arm_config=right_arm_config,
+    )
+    return make_robot_from_config(cfg)
+
+
+def _validate_robot_features(robot):
+    actual = list(robot.action_features)
+    if actual != MOTOR_NAMES:
+        raise RuntimeError(
+            "LeRobot action feature order does not match the policy server protocol.\n"
+            f"Expected: {MOTOR_NAMES}\n"
+            f"Actual:   {actual}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -244,35 +236,52 @@ def _build_robot(args):
 
 def _lerobot_obs_to_server(lerobot_obs: dict, task: str) -> dict:
     """
-    Convert a LeRobot observation dict to the flat dict the policy server expects.
+    Convert a LeRobot v0.5.1 raw observation dict to the policy-server dict.
 
-    LeRobot keys                           server keys
+    LeRobot raw keys                       server keys
     ──────────────────────────────────────────────────────────────
-    observation.state  (12,) tensor    →   individual motor floats
-    observation.images.left_wrist      →   "left_wrist"   uint8 HWC
-    observation.images.right_wrist     →   "right_wrist"  uint8 HWC
-    observation.images.right_front     →   "right_front"  uint8 HWC
-                                       →   "task"         str
+    left_shoulder_pan.pos              →   left_shoulder_pan.pos
+    left_wrist                         →   left_wrist   uint8 HWC
+    right_wrist                        →   right_wrist  uint8 HWC
+    right_front                        →   right_front  uint8 HWC
+                                       →   task         str
     """
-    state = lerobot_obs["observation.state"]
-    if isinstance(state, torch.Tensor):
-        state = state.cpu().float().numpy()
-    state = np.asarray(state, dtype=np.float32)
+    missing = [key for key in [*MOTOR_NAMES, *CAMERA_NAMES] if key not in lerobot_obs]
+    if missing:
+        raise KeyError(
+            "LeRobot observation is missing key(s) required by the policy server: "
+            + ", ".join(missing)
+        )
 
-    server_obs: dict = {name: float(state[i]) for i, name in enumerate(MOTOR_NAMES)}
+    server_obs: dict = {name: float(lerobot_obs[name]) for name in MOTOR_NAMES}
     server_obs["task"] = task
 
-    for key, val in lerobot_obs.items():
-        if not key.startswith("observation.images."):
-            continue
-        cam_name = key[len("observation.images."):]
+    for cam_name in CAMERA_NAMES:
+        val = lerobot_obs[cam_name]
         if isinstance(val, torch.Tensor):
-            img = (val.permute(1, 2, 0).cpu() * 255).byte().numpy()
+            img_tensor = val.detach().cpu()
+            if img_tensor.ndim == 3 and img_tensor.shape[0] in (1, 3):
+                img_tensor = img_tensor.permute(1, 2, 0)
+            if img_tensor.dtype.is_floating_point:
+                img_tensor = (img_tensor.clamp(0, 1) * 255).byte()
+            img = img_tensor.numpy()
         else:
-            img = np.asarray(val, dtype=np.uint8)
-        server_obs[cam_name] = img
+            img = np.asarray(val)
+        server_obs[cam_name] = img.astype(np.uint8, copy=False)
 
     return server_obs
+
+
+def _action_tensor_to_dict(action: torch.Tensor) -> dict[str, float]:
+    if isinstance(action, torch.Tensor):
+        values = action.detach().cpu().float().reshape(-1).tolist()
+    else:
+        values = np.asarray(action, dtype=np.float32).reshape(-1).tolist()
+
+    if len(values) != ACTION_DIM:
+        raise ValueError(f"Expected action with {ACTION_DIM} values, got {len(values)}.")
+
+    return {name: float(values[i]) for i, name in enumerate(MOTOR_NAMES)}
 
 
 # ---------------------------------------------------------------------------
@@ -309,12 +318,9 @@ def _handshake(stub, server_addr: str, actions_per_chunk: int):
     log.info("SendPolicyInstructions() — config sent (actions_per_chunk=%d)", actions_per_chunk)
 
 
-def _safe_send_action(robot, action: torch.Tensor):
-    """Call robot.send_action(), trying tensor first then dict fallback."""
-    try:
-        robot.send_action(action)
-    except TypeError:
-        robot.send_action({"action": action})
+def _send_action_tensor(robot, action: torch.Tensor):
+    """Convert the server's 12-D action tensor to LeRobot v0.5.1 action dict."""
+    robot.send_action(_action_tensor_to_dict(action))
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +349,7 @@ def _write_front_frame(writer, lerobot_obs: dict, n_duplicates: int):
     """
     Write the front-camera frame n_duplicates times so the MP4 plays at real-time speed.
 
-    Because capture_observation() is called once per action chunk (every 1 s at 20 fps),
+    Because get_observation() is called once per action chunk (every 1 s at 20 fps),
     we duplicate each frame actions_per_chunk times to fill the 20-fps video timeline
     without speed distortion.
     """
@@ -353,11 +359,16 @@ def _write_front_frame(writer, lerobot_obs: dict, n_duplicates: int):
         import cv2
     except ImportError:
         return
-    front = lerobot_obs.get("observation.images.right_front")
+    front = lerobot_obs.get("right_front")
     if front is None:
         return
     if isinstance(front, torch.Tensor):
-        front = (front.permute(1, 2, 0).cpu() * 255).byte().numpy()
+        front = front.detach().cpu()
+        if front.ndim == 3 and front.shape[0] in (1, 3):
+            front = front.permute(1, 2, 0)
+        if front.dtype.is_floating_point:
+            front = (front.clamp(0, 1) * 255).byte()
+        front = front.numpy()
     frame_bgr = cv2.cvtColor(np.asarray(front, dtype=np.uint8), cv2.COLOR_RGB2BGR)
     for _ in range(n_duplicates):
         writer.write(frame_bgr)
@@ -382,7 +393,7 @@ def _run_step(
     Keyboard events are checked between every individual action (≤ dt latency).
     Returns (success, lerobot_obs).  lerobot_obs is None on gRPC failure.
     """
-    lerobot_obs = robot.capture_observation()
+    lerobot_obs = robot.get_observation()
     server_obs  = _lerobot_obs_to_server(lerobot_obs, task)
 
     timed_obs = TimedObservation(
@@ -422,7 +433,7 @@ def _run_step(
         if events.exit_early:
             break
         t0 = time.perf_counter()
-        _safe_send_action(robot, timed_action.get_action())
+        _send_action_tensor(robot, timed_action.get_action())
         elapsed = time.perf_counter() - t0
         time.sleep(max(0.0, dt - elapsed))
 
@@ -465,6 +476,7 @@ def run_eval(args):
     log.info("Connecting to robot (left=%s, right=%s) ...",
              args.left_follower_port, args.right_follower_port)
     robot = _build_robot(args)
+    _validate_robot_features(robot)
     robot.connect()
     log.info("Robot connected.")
 
