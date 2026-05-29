@@ -21,7 +21,7 @@ source .venv/bin/activate
 在项目根目录执行:
 
 ```bash
-git clone https://github.com/huggingface/lerobot.git third_party/lerobot
+git clone --branch v0.5.1 https://github.com/huggingface/lerobot.git third_party/lerobot
 ```
 
 安装 editable 版本的 LeRobot 以及 `all` extras:

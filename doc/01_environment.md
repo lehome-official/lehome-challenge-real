@@ -21,7 +21,7 @@ source .venv/bin/activate
 Run from the project root:
 
 ```bash
-git clone https://github.com/huggingface/lerobot.git third_party/lerobot
+git clone --branch v0.5.1 https://github.com/huggingface/lerobot.git third_party/lerobot
 ```
 
 Install the editable version with all extras:
