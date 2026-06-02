@@ -207,8 +207,8 @@ def _build_robot(args):
                 height=args.front_height,
                 fps=args.fps,
                 backend=Cv2Backends.V4L2,
-                fourcc="MJPG",
-                warmup_s=5,
+                fourcc="YUYV",
+                warmup_s=10,
             ),
         },
     )
@@ -218,6 +218,36 @@ def _build_robot(args):
         right_arm_config=right_arm_config,
     )
     return make_robot_from_config(cfg)
+
+
+def _force_release_robot(robot) -> None:
+    """Best-effort release of every sub-device after a partial/failed connect.
+
+    bi_so_follower.disconnect() (and each arm's disconnect()) is decorated with
+    @check_if_not_connected, so it raises immediately when any sub-device failed
+    to connect — e.g. one arm came up but the other's front camera timed out.
+    That would leave the already-opened cameras' background read threads running,
+    keeping the UVC device in a half-streaming state until a manual USB reset.
+
+    We bypass the decorators and release each arm's cameras and motor bus
+    individually, guarding every call so one failure can't block the rest.
+    A camera's disconnect() stops its read thread whenever the thread exists,
+    even if is_connected is False, which is exactly the partial-connect case.
+    """
+    for arm in (getattr(robot, "left_arm", None), getattr(robot, "right_arm", None)):
+        if arm is None:
+            continue
+        for cam in getattr(arm, "cameras", {}).values():
+            try:
+                cam.disconnect()
+            except Exception as e:
+                log.debug("camera release skipped: %s", e)
+        bus = getattr(arm, "bus", None)
+        if bus is not None:
+            try:
+                bus.disconnect()
+            except Exception as e:
+                log.debug("bus release skipped: %s", e)
 
 
 def _validate_robot_features(robot):
@@ -477,7 +507,19 @@ def run_eval(args):
              args.left_follower_port, args.right_follower_port)
     robot = _build_robot(args)
     _validate_robot_features(robot)
-    robot.connect()
+    try:
+        robot.connect()
+    except Exception as e:
+        # A partial connect (e.g. one arm up, then a camera read times out) leaves
+        # cameras/serial ports open.  If we let the exception abort the process the
+        # OpenCV background read threads never stop and the UVC device is left in a
+        # half-streaming state — the next run then fails until a manual USB reset.
+        # Best-effort release of whatever did open so the device recovers cleanly.
+        log.error("Robot connect failed: %s", e)
+        _force_release_robot(robot)
+        if listener:
+            listener.stop()
+        sys.exit(1)
     log.info("Robot connected.")
 
     # --- gRPC ---

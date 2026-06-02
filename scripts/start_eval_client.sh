@@ -11,6 +11,7 @@
 #
 # All variables can be overridden on the command line:
 #   TEAM=myteam N_EPISODES=3 bash scripts/start_eval_client.sh
+sudo usbreset 2bc5:066b
 
 set -euo pipefail
 
@@ -50,7 +51,7 @@ export TASK="${TASK:-Fold the Garment}"
 export N_EPISODES="${N_EPISODES:-2}"
 export EPISODE_DURATION="${EPISODE_DURATION:-60}"
 export SERVER_ADDR="${SERVER_ADDR:-localhost:8080}"
-export FPS="${FPS:-20}"
+export FPS="${FPS:-30}"
 export ACTIONS_PER_CHUNK="${ACTIONS_PER_CHUNK:-20}"
 export DISPLAY="${DISPLAY:-:0}"    # required for pynput under Wayland/headless
 
